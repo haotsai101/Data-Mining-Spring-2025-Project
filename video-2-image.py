@@ -24,7 +24,6 @@ def main():
       if(ret == True):
 
           name = 'frame' + str(current_frame) + '.jpg'
-          print(f'Creating: {name}')
           cv2.imwrite(os.path.join(path_to_save, name), frame)
 
           current_frame += 1
