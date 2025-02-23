@@ -39,7 +39,7 @@ def extract_frames(video_path):
   total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
   duration = total_frames / fps if fps > 0 else 0
 
-  face_detector = FaceDetector()
+  face_detector = FaceDetector(name='resnet')
 
   print(f"Processing {video_path}: {duration:.2f} seconds, {fps:.2f} FPS")
 
