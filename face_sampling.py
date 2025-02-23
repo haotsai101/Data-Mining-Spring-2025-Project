@@ -11,19 +11,20 @@ def get_args():
     parser = argparse.ArgumentParser(description='Face and Emotion Detection in Video')
     parser.add_argument('--input_path', type=str, required=True, help='Path to the input video file')
     parser.add_argument('--output_path', type=str, required=True, help='Path to the output folder')
+    parser.add_argument('--step_size', type=str, required=True, help='Step size for frame extraction')
     return parser.parse_args()
 
-def worker(q, output_path, progress_bar):
+def worker(q, output_path, step_size, progress_bar):
     """Worker function to process videos from the queue."""
     while True:
         video_path = q.get()
         if video_path is None:
             break
-        extract_frames(video_path, output_path)
+        extract_frames(video_path, output_path, step_size)
         q.task_done()
         progress_bar.update(1)  # Update progress bar when a video is processed
 
-def extract_frames(video_path, output_path):
+def extract_frames(video_path, output_path, step_size):
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     output_folder = os.path.join(output_path, f"{video_name}-Sample")
     os.makedirs(output_folder, exist_ok=True)
@@ -41,8 +42,8 @@ def extract_frames(video_path, output_path):
 
     print(f"Processing {video_path}: {duration:.2f} seconds, {fps:.2f} FPS")
 
-    for step in range(int(duration // 20) + 1):
-        frame_idx = int(step * 20 * fps)
+    for step in range(int(duration // step_size) + 1):
+        frame_idx = int(step * step_size * fps)
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
 
         ret, frame = cap.read()
@@ -71,6 +72,7 @@ def main():
     args = get_args()
     INPUT_PATH = args.input_path
     OUTPUT_PATH = args.output_path
+    STEP_SIZE = args.step_size
 
     video_files = [os.path.join(INPUT_PATH, f) for f in os.listdir(INPUT_PATH) if f.endswith('.mp4')]
 
@@ -81,7 +83,7 @@ def main():
     # Initialize the progress bar
     with tqdm(total=len(video_files), desc="Processing Videos", unit="file") as progress_bar:
         for _ in range(num_threads):
-            t = threading.Thread(target=worker, args=(q, OUTPUT_PATH, progress_bar))
+            t = threading.Thread(target=worker, args=(q, OUTPUT_PATH, int(STEP_SIZE), progress_bar))
             t.start()
             threads.append(t)
 
