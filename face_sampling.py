@@ -41,8 +41,8 @@ def extract_frames(video_path, output_path):
 
     print(f"Processing {video_path}: {duration:.2f} seconds, {fps:.2f} FPS")
 
-    for minute in range(int(duration // 60) + 1):
-        frame_idx = int(minute * 60 * fps)
+    for step in range(int(duration // 20) + 1):
+        frame_idx = int(step * 20 * fps)
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
 
         ret, frame = cap.read()
