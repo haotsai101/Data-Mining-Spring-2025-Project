@@ -13,14 +13,15 @@ def get_args():
     parser.add_argument('--output_path', type=str, required=True, help='Path to the output folder')
     return parser.parse_args()
 
-def worker(q, output_path):
-    """Worker function to process videos from the queue with a progress bar."""
+def worker(q, output_path, progress_bar):
+    """Worker function to process videos from the queue."""
     while True:
         video_path = q.get()
         if video_path is None:
             break
         extract_frames(video_path, output_path)
         q.task_done()
+        progress_bar.update(1)  # Update progress bar when a video is processed
 
 def extract_frames(video_path, output_path):
     video_name = os.path.splitext(os.path.basename(video_path))[0]
@@ -35,36 +36,35 @@ def extract_frames(video_path, output_path):
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration = total_frames / fps if fps > 0 else 0
-    num_minutes = int(duration // 60) + 1
 
     face_detector = FaceDetector(name='resnet')
 
     print(f"Processing {video_path}: {duration:.2f} seconds, {fps:.2f} FPS")
 
-    # Initialize progress bar for video processing
-    progress_bar = tqdm(total=num_minutes, desc=f"Processing {video_name}", position=0, leave=True)
-
-    for minute in range(num_minutes):
+    for minute in range(int(duration // 60) + 1):
         frame_idx = int(minute * 60 * fps)
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
 
         ret, frame = cap.read()
         if not ret:
-            print(f"Error: Could not read frame at minute {minute} in {video_name}.")
-            continue
+            print("Error: Could not read frame.")
+            break
 
         faces, boxes, scores, landmarks = face_detector.detect_align(frame)
         for i, box in enumerate(boxes):
             x1, y1, x2, y2 = [int(coord.item()) for coord in box]
+
+            # Crop the face region
             face_crop = frame[y1:y2, x1:x2]
 
-            face_filename = os.path.join(output_folder, f"face_frame_{frame_idx}_det_{i}.jpg")
+            # Construct filename and save
+            face_filename = os.path.join(
+                output_folder,
+                f"face_frame_{frame_idx}_det_{i}.jpg"
+            )
             cv2.imwrite(face_filename, face_crop)
 
-        progress_bar.update(1)  # Update progress bar after each minute is processed
-
     cap.release()
-    progress_bar.close()
     print(f"Processing complete for {video_name}!")
 
 def main():
@@ -78,23 +78,25 @@ def main():
     threads = []
     num_threads = 10
 
-    for _ in range(num_threads):
-        t = threading.Thread(target=worker, args=(q, OUTPUT_PATH))
-        t.start()
-        threads.append(t)
+    # Initialize the progress bar
+    with tqdm(total=len(video_files), desc="Processing Videos", unit="file") as progress_bar:
+        for _ in range(num_threads):
+            t = threading.Thread(target=worker, args=(q, OUTPUT_PATH, progress_bar))
+            t.start()
+            threads.append(t)
 
-    for video_file in video_files:
-        q.put(video_file)
+        for video_file in video_files:
+            q.put(video_file)
 
-    q.join()
+        q.join()
 
-    for _ in range(num_threads):
-        q.put(None)
+        for _ in range(num_threads):
+            q.put(None)
 
-    for t in threads:
-        t.join()
+        for t in threads:
+            t.join()
 
-    print("Processing complete!")
+    print("All videos processed successfully!")
 
 if __name__ == "__main__":
     main()
