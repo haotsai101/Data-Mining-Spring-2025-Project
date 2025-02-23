@@ -10,22 +10,22 @@ import queue
 def get_args():
   parser = argparse.ArgumentParser(description='Face and Emotion Detection in Video')
   parser.add_argument('--input_path', type=str, required=True, help='Path to the input video file')
+  parser.add_argument('--output_path', type=str, required=True, help='Path to the output folder')
   return parser.parse_args()
 
-def worker(q):
+def worker(q, output_path):
   """Worker function to process videos from the queue."""
   while True:
     video_path = q.get()
     if video_path is None:
       break
-    extract_frames(video_path)
+    extract_frames(video_path, output_path)
     q.task_done()
 
 
-def extract_frames(video_path):
-  video_dir = os.path.dirname(video_path)
+def extract_frames(video_path, output_path):
   video_name = os.path.splitext(os.path.basename(video_path))[0]
-  output_folder = os.path.join(video_dir, f"{video_name}-Sample")
+  output_folder = os.path.join(output_path, f"{video_name}-Sample")
   os.makedirs(output_folder, exist_ok=True)
   
   cap = cv2.VideoCapture(video_path)
@@ -75,6 +75,7 @@ def extract_frames(video_path):
 def main():
   args = get_args()
   INPUT_PATH = args.input_path
+  OUTPUT_PATH = args.output_path
 
   vidoe_files = [os.path.join(INPUT_PATH, f) for f in os.listdir(INPUT_PATH) if f.endswith('.mp4')]
 
@@ -83,7 +84,7 @@ def main():
   num_threads = 10
 
   for _ in range(num_threads):
-    t = threading.Thread(target=worker, args=(q,))
+    t = threading.Thread(target=worker, args=(q, OUTPUT_PATH))
     t.start()
     threads.append(t)
 
