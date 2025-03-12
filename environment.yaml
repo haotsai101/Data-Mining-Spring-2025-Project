@@ -1,0 +1,18 @@
+name: ds4150-faces
+channels:
+  - pytorch
+  - defaults
+dependencies:
+  - python=3.8.5
+  - pip=20.3
+  - cudatoolkit=11.0
+  - pytorch=1.7.0
+  - torchvision=0.8.1
+  - numpy=1.19.2
+  - ipython
+  - matplotlib
+  - tqdm
+  - jupyterlab
+  - numexpr
+  - pip:
+    - git+https://github.com/sajjjadayobi/FaceLib.git
