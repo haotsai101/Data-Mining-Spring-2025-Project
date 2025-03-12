@@ -14,5 +14,7 @@ dependencies:
   - tqdm
   - jupyterlab
   - numexpr
+  - conda-forge::sqlite
+  - conda-forge::imagehash
   - pip:
     - git+https://github.com/sajjjadayobi/FaceLib.git
