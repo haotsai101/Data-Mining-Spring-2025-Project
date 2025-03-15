@@ -1,6 +1,8 @@
 /data/
 /tmp/
 /images/
+movies.db
+movies.db-journal
 .DS_Store
 
 # Byte-compiled / optimized / DLL files

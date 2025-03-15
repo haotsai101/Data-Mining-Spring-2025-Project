@@ -101,6 +101,12 @@ class Movie(TableRowUser, ABC):
         m.get_connection().commit()
         return m
 
+    @staticmethod
+    def iterate_all_movies():
+        cursor = conn.cursor()
+        cursor.execute("SELECT imdb_id, file_path, title FROM movie")
+        return cursor.fetchall()
+
     def __init__(self, imdb_id):
         super().__init__()
         self.imdb_id = imdb_id
@@ -129,7 +135,7 @@ class Movie(TableRowUser, ABC):
     def get_omdb_data(self):
         return omdb.get_movie_data(identifier=self.get_imdb_id(), is_imdb_id=True)
 
-    def get_all_frames(self):
+    def get_file_handle(self):
         file_path = self.get_file_path()
         if file_path and os.path.exists(file_path):
             return cv2.VideoCapture(file_path)
@@ -142,12 +148,21 @@ import imagehash
 import hashlib
 from PIL import Image
 
+
+def array_to_blob(vector: np.ndarray) -> bytes:
+    """Serialize the vector into a byte format (BLOB)"""
+    return pickle.dumps(vector)
+
+def blob_to_array(vector_blob: bytes) -> np.ndarray:
+    """Deserialize the byte format back to a numpy array"""
+    return pickle.loads(vector_blob)
+
 class Frame(TableRowUser):
     movie_cache = {}
 
     @staticmethod
-    def add_frame(imdb_id, frame_index):
-        f = Frame(imdb_id, frame_index)
+    def add_frame(imdb_id, frame_index, frame_image=None):
+        f = Frame(imdb_id, frame_index, frame_image=frame_image)
         cursor = f.get_cursor()
         
         cursor.execute("""
@@ -159,6 +174,8 @@ class Frame(TableRowUser):
                 d_hash TEXT,
                 perceptual_hash TEXT,
                 md5_hash TEXT,
+                average_color BLOB,
+                num_faces INTEGER,
                 PRIMARY KEY (imdb_id, frame_index)
             )
         """)
@@ -171,10 +188,11 @@ class Frame(TableRowUser):
         f.get_connection().commit()
         return f
 
-    def __init__(self, imdb_id, frame_index):
+    def __init__(self, imdb_id, frame_index, frame_image=None):
         super().__init__()
         self.imdb_id = imdb_id
         self.frame_index = frame_index
+        self.frame_image = frame_image
 
     @staticmethod
     def get_movie(imdb_id):
@@ -184,7 +202,7 @@ class Frame(TableRowUser):
 
     def get_frame_timestamp(self):
         movie = Frame.get_movie(self.imdb_id)
-        video = movie.get_all_frames()
+        video = movie.get_file_handle()
         if not video:
             return None
         
@@ -192,14 +210,18 @@ class Frame(TableRowUser):
         return self.frame_index / fps if fps and fps > 0 else None
 
     def get_frame_image(self):
+        if not self.frame_image is None:
+            return self.frame_image
+        
         movie = Frame.get_movie(self.imdb_id)
-        video = movie.get_all_frames()
+        video = movie.get_file_handle()
         if not video:
-            return None
+            raise Exception('Could not find image frame; video is not specificed properly.')
         
         video.set(cv2.CAP_PROP_POS_FRAMES, self.frame_index)
         success, frame = video.read()
-        return Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)) if success else None
+        self.frame_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)) if success else None
+        return self.frame_image
 
     def get_cached_hash(self, hash_type):
         cursor = self.get_cursor()
@@ -209,10 +231,8 @@ class Frame(TableRowUser):
 
     def compute_and_cache_hash(self, hash_func, hash_type):
         frame_image = self.get_frame_image()
-        if not frame_image:
-            raise Exception("No image to compute hash on")
         
-        hash_value = str(hash_func(frame_image))
+        hash_value = hash_func(frame_image)
         cursor = self.get_cursor()
         cursor.execute(f"""
             UPDATE frame SET {hash_type} = ?
@@ -221,44 +241,88 @@ class Frame(TableRowUser):
         self.get_connection().commit()
         return hash_value
 
-    def get_wavelet_hash(self, frame_image):
-        return self.get_cached_hash("wavelet_hash") or self.compute_and_cache_hash(imagehash.whash, "wavelet_hash")
+    def get_wavelet_hash(self):
+        whash = lambda x: str(imagehash.whash(x))
+        return self.get_cached_hash("wavelet_hash") or self.compute_and_cache_hash(whash, "wavelet_hash")
 
-    def get_a_hash(self, frame_image):
-        return self.get_cached_hash("a_hash") or self.compute_and_cache_hash(imagehash.average_hash, "a_hash")
+    def get_a_hash(self):
+        average_hash = lambda x: str(imagehash.average_hash(x))
+        return self.get_cached_hash("a_hash") or self.compute_and_cache_hash(average_hash, "a_hash")
 
-    def get_d_hash(self, frame_image):
-        return self.get_cached_hash("d_hash") or self.compute_and_cache_hash(imagehash.dhash, "d_hash")
+    def get_d_hash(self):
+        dhash = lambda x: str(imagehash.dhash(x))
+        return self.get_cached_hash("d_hash") or self.compute_and_cache_hash(dhash, "d_hash")
 
-    def get_perceptual_hash(self, frame_image):
-        return self.get_cached_hash("perceptual_hash") or self.compute_and_cache_hash(imagehash.phash, "perceptual_hash")
+    def get_perceptual_hash(self):
+        phash = lambda x: str(imagehash.phash(x))
+        return self.get_cached_hash("perceptual_hash") or self.compute_and_cache_hash(phash, "perceptual_hash")
 
-    def get_md5_hash(self, frame_image):
-        cached_md5 = self.get_cached_hash("md5_hash")
-        if cached_md5:
-            return cached_md5
+    def get_md5_hash(self):
+        compute_md5_on_img = lambda img: str(hashlib.md5(img.tobytes()).hexdigest())
+        return self.get_cached_hash("md5_hash") or self.compute_and_cache_hash(compute_md5_on_img, "md5_hash")
         
-        if frame_image is None:
-            return None
+        # cached_md5 = self.get_cached_hash("md5_hash")
+        # if cached_md5:
+        #     return cached_md5
         
-        img_bytes = frame_image.tobytes()
-        md5_hash = hashlib.md5(img_bytes).hexdigest()
+        # if frame_image is None:
+        #     return None
         
+        # img_bytes = img.tobytes()
+        # md5_hash = hashlib.md5(img_bytes).hexdigest()
+        
+        # cursor = self.get_cursor()
+        # cursor.execute("""
+        #     UPDATE frame SET md5_hash = ?
+        #     WHERE imdb_id = ? AND frame_index = ?
+        # """, (md5_hash, self.imdb_id, self.frame_index))
+        # self.get_connection().commit()
+        
+        # return md5_hash
+
+    def get_average_color(self):
+        compute_mean_color = lambda img: array_to_blob(np.mean(np.array(img), axis=(0, 1)))
+        ret = self.get_cached_hash("average_color") or self.compute_and_cache_hash(compute_mean_color, "average_color")
+        return blob_to_array(ret)
+
+    def get_num_faces(self):
+        cursor = self.get_cursor()
+        cursor.execute(f"SELECT num_faces FROM frame WHERE imdb_id = ? AND frame_index = ?", (self.imdb_id, self.frame_index))
+        result = cursor.fetchone()
+        if result and result[0]:
+            return result[0]
+        else:
+            raise Exception('Frame not fully calculated: unknown number of faces');
+
+    def set_num_faces(self, num_faces):
+        cursor = self.get_cursor()
+        cursor.execute(f"""
+            UPDATE frame SET num_faces = ?
+            WHERE imdb_id = ? AND frame_index = ?
+        """, (num_faces, self.imdb_id, self.frame_index))
+        self.get_connection().commit()
+
+    def compute_frame(self):
+        self.get_wavelet_hash()
+        self.get_a_hash()
+        self.get_d_hash()
+        self.get_perceptual_hash()
+        self.get_md5_hash()
+        self.get_average_color()
+
+    def is_fully_cached(self):
         cursor = self.get_cursor()
         cursor.execute("""
-            UPDATE frame SET md5_hash = ?
-            WHERE imdb_id = ? AND frame_index = ?
-        """, (md5_hash, self.imdb_id, self.frame_index))
-        self.get_connection().commit()
-        
-        return md5_hash
+            SELECT * FROM frame
+            WHERE frame_index = ?
+        """, (self.frame_index,)
+        )
 
-    def compute_frame(self, frame_image):
-        self.get_wavelet_hash(frame_image)
-        self.get_a_hash(frame_image)
-        self.get_d_hash(frame_image)
-        self.get_perceptual_hash(frame_image)
-        self.get_md5_hash(frame_image)
+        result = cursor.fetchone()
+        if result and not any(elem is None for elem in result):
+            return True
+        else:
+            return False
 
 
 class Actor(TableRowUser, ABC):
@@ -490,7 +554,7 @@ class Face(TableRowUser, ABC):
         raise Exception("Face not aligned yet")
         
         # movie = Frame.get_movie(self.imdb_id)
-        # video = movie.get_all_frames()
+        # video = movie.get_file_handle()
         # if not video:
         #     raise Exception(f"No Video found for imdb_id: {self.imdb_id}")
         
@@ -507,29 +571,21 @@ class Face(TableRowUser, ABC):
 
         # return face_image_cache.get_image(face_image_cache_key)
 
-
-    def _serialize_vector(self, vector: np.ndarray) -> bytes:
-        """Serialize the vector into a byte format (BLOB)"""
-        return pickle.dumps(vector)
-
-    def _deserialize_vector(self, vector_blob: bytes) -> np.ndarray:
-        """Deserialize the byte format back to a numpy array"""
-        return pickle.loads(vector_blob)
-
     def get_facial_landmarks(self):
         cursor = self.get_cursor()
         cursor.execute("SELECT facial_landmarks FROM face WHERE imdb_id = ? AND frame_index = ? AND face_index = ?",
                        (self.imdb_id, self.frame_index, self.face_index))
         result = cursor.fetchone()
         if result:
-            return self._deserialize_vector(result[0])
+            return blob_to_array(result[0])
         else:
             raise Exception("No facial_landmarks defined for movie/frame/index")
 
     def set_facial_landmarks(self, vector: np.ndarray):
         """Insert a vector into the database, associated with the given key"""
-        vector_blob = self._serialize_vector(vector)
-        self.cursor.execute('''
+        vector_blob = array_to_blob(vector)
+        cursor = self.get_cursor()
+        cursor.execute('''
             INSERT OR REPLACE INTO face (imdb_id, frame_index, face_index, facial_landmarks) VALUES (?, ?, ?, ?)
         ''', (self.imdb_id, self.frame_index, self.face_index, vector_blob))
         self.conn.commit()
@@ -540,14 +596,15 @@ class Face(TableRowUser, ABC):
                        (self.imdb_id, self.frame_index, self.face_index))
         result = cursor.fetchone()
         if result:
-            return self._deserialize_vector(result[0])
+            return blob_to_array(result[0])
         else:
             raise Exception("No emotion_embedding defined for movie/frame/index")
     
     def set_emotion_embedding(self, vector: np.ndarray):
         """Insert a vector into the database, associated with the given key"""
-        vector_blob = self._serialize_vector(vector)
-        self.cursor.execute('''
+        vector_blob = array_to_blob(vector)
+        cursor = self.get_cursor()
+        cursor.execute('''
             INSERT OR REPLACE INTO face (imdb_id, frame_index, face_index, emotion_embedding) VALUES (?, ?, ?, ?)
         ''', (self.imdb_id, self.frame_index, self.face_index, vector_blob))
         self.conn.commit()
@@ -558,14 +615,15 @@ class Face(TableRowUser, ABC):
     #                    (self.imdb_id, self.frame_index, self.face_index))
     #     result = cursor.fetchone()
     #     if result:
-    #         return self._deserialize_vector(result[0])
+    #         return self.blob_to_array(result[0])
     #     else:
     #         raise Exception("No face_embedding defined for movie/frame/index")
     
     # def set_face_embedding(self, vector: np.ndarray):
     #     """Insert a vector into the database, associated with the given key"""
-    #     vector_blob = self._serialize_vector(vector)
-    #     self.cursor.execute('''
+    #     vector_blob = self.array_to_blob(vector)
+    #     cursor = self.get_cursor()
+    #     cursor.execute('''
     #         INSERT OR REPLACE INTO face (imdb_id, frame_index, face_index, face_embedding) VALUES (?, ?, ?, ?)
     #     ''', (self.imdb_id, self.frame_index, self.face_index, vector_blob))
     #     self.conn.commit()
