@@ -128,10 +128,10 @@ class Movie():
     def iterate_frames(self):
         with closing(conn.cursor()) as cursor:
             cursor.execute("""
-                SELECT imdb_id, frame_index FROM frame
+                SELECT frame_index FROM frame
                 WHERE imdb_id = ?
             """, (self.get_imdb_id(),))
-            return [ Frame(res[0], res[1]) for res in cursor.fetchall() ]
+            return [ Frame(self.imdb_id, res[0]) for res in cursor.fetchall() ]
     # def iterate_frames(self):
     #     cursor = conn.cursor()
     #     cursor.execute("""
@@ -164,29 +164,29 @@ class Frame():
     @staticmethod
     def add_frame(imdb_id, frame_index, frame_image=None):
         f = Frame(imdb_id, frame_index, frame_image=frame_image)
-        cursor = f.get_cursor()
+        with closing(conn.cursor()) as cursor:
         
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS frame (
-                imdb_id TEXT,
-                frame_index INTEGER,
-                wavelet_hash TEXT,
-                a_hash TEXT,
-                d_hash TEXT,
-                perceptual_hash TEXT,
-                md5_hash TEXT,
-                average_color BLOB,
-                num_faces INTEGER,
-                PRIMARY KEY (imdb_id, frame_index)
-            )
-        """)
-
-        cursor.execute("""
-            INSERT OR IGNORE INTO frame (imdb_id, frame_index)
-            VALUES (?, ?)
-        """, (imdb_id, frame_index))
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS frame (
+                    imdb_id TEXT,
+                    frame_index INTEGER,
+                    wavelet_hash TEXT,
+                    a_hash TEXT,
+                    d_hash TEXT,
+                    perceptual_hash TEXT,
+                    md5_hash TEXT,
+                    average_color BLOB,
+                    num_faces INTEGER,
+                    PRIMARY KEY (imdb_id, frame_index)
+                )
+            """)
+    
+            cursor.execute("""
+                INSERT OR IGNORE INTO frame (imdb_id, frame_index)
+                VALUES (?, ?)
+            """, (imdb_id, frame_index))
         
-        f.get_connection().commit()
+        conn.commit()
         return f
 
     def __init__(self, imdb_id, frame_index, frame_image=None):
