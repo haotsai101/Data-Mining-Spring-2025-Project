@@ -16,5 +16,11 @@ dependencies:
   - numexpr
   - conda-forge::sqlite
   - conda-forge::imagehash
+  - anaconda::pandas
+  - conda-forge::postgresql
+  - anaconda::psycopg2
+  - conda-forge::pgvector
   - pip:
     - git+https://github.com/sajjjadayobi/FaceLib.git
+    - torchviz
+    - pgvector
