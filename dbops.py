@@ -2,15 +2,38 @@ from typing import List, Dict, Optional
 from contextlib import closing
 
 
-import sqlite3
-conn = sqlite3.connect("movies.db")
+# import sqlite3
+# conn = sqlite3.connect("movies.db")
+import psycopg2
+conn = psycopg2.connect("dbname=postgres user=u1319464 port=2111")
 
 import numpy as np
 import requests
 import json
-import pickle
 import cv2
 import os
+
+# # Define a custom adapter and typecaster for the vector type
+# from psycopg2.extensions import register_adapter, register_type, new_type
+# from psycopg2.extras import CompositeCaster
+
+
+# class VectorCaster(CompositeCaster):
+#     def make(self, values):
+#         print(values)
+#         return np.array(json.loads(values), dtype=np.float32)
+#         # return np.array(values, dtype=np.float32)
+
+# def register_vector():
+#     VECOID = 33000  # This is the OID for the vector type in your PostgreSQL database
+#     VECTOR = new_type((VECOID,), 'VECTOR', VectorCaster)
+#     register_type(VECTOR)
+
+# # Register the vector type
+# register_vector()
+import pgvector.psycopg2
+pgvector.psycopg2.register_vector(conn) #register pgvector's types
+
 
 class OMDBApiCache:
     cache = {}
@@ -67,19 +90,10 @@ class Movie():
         m = Movie(imdb_id=omdb_data.get("imdbID"))
         
         with closing(conn.cursor()) as cursor:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS movie (
-                    file_path TEXT,
-                    title TEXT,
-                    imdb_id TEXT,
-                    date_created TEXT,
-                    PRIMARY KEY (imdb_id)
-                )
-            """)
             
             cursor.execute("""
                 INSERT INTO movie (file_path, title, date_created, imdb_id)
-                VALUES (?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s)
             """, (file_path, omdb_data.get("Title"), omdb_data.get("Released"), omdb_data.get("imdbID")))
             
             conn.commit()
@@ -97,13 +111,13 @@ class Movie():
 
     def get_file_path(self):
         with closing(conn.cursor()) as cursor:
-            cursor.execute("SELECT file_path FROM movie WHERE imdb_id = ?", (self.get_imdb_id(),))
+            cursor.execute("SELECT file_path FROM movie WHERE imdb_id = %s", (self.get_imdb_id(),))
             result = cursor.fetchone()
             return result[0] if result else None
 
     def get_title(self):
         with closing(conn.cursor()) as cursor:
-            cursor.execute("SELECT title FROM movie WHERE imdb_id = ?", (self.get_imdb_id(),))
+            cursor.execute("SELECT title FROM movie WHERE imdb_id = %s", (self.get_imdb_id(),))
             result = cursor.fetchone()
             return result[0] if result else None
 
@@ -112,7 +126,7 @@ class Movie():
 
     def get_date_created(self):
         with closing(conn.cursor()) as cursor:
-            cursor.execute("SELECT date_created FROM movie WHERE imdb_id = ?", (self.get_imdb_id(),))
+            cursor.execute("SELECT date_created FROM movie WHERE imdb_id = %s", (self.get_imdb_id(),))
             result = cursor.fetchone()
             return result[0] if result else None
 
@@ -129,14 +143,14 @@ class Movie():
         with closing(conn.cursor()) as cursor:
             cursor.execute("""
                 SELECT frame_index FROM frame
-                WHERE imdb_id = ?
+                WHERE imdb_id = %s
             """, (self.get_imdb_id(),))
             return [ Frame(self.imdb_id, res[0]) for res in cursor.fetchall() ]
     # def iterate_frames(self):
     #     cursor = conn.cursor()
     #     cursor.execute("""
     #         SELECT imdb_id, frame_index FROM frame
-    #         WHERE imdb_id = ?
+    #         WHERE imdb_id = %s
     #     """, (self.get_imdb_id(),))
         
     #     for res in cursor:
@@ -149,15 +163,6 @@ import imagehash
 import hashlib
 from PIL import Image
 
-
-def array_to_blob(vector: np.ndarray) -> bytes:
-    """Serialize the vector into a byte format (BLOB)"""
-    return pickle.dumps(vector)
-
-def blob_to_array(vector_blob: bytes) -> np.ndarray:
-    """Deserialize the byte format back to a numpy array"""
-    return pickle.loads(vector_blob)
-
 class Frame():
     movie_cache = {}
 
@@ -165,25 +170,11 @@ class Frame():
     def add_frame(imdb_id, frame_index, frame_image=None):
         f = Frame(imdb_id, frame_index, frame_image=frame_image)
         with closing(conn.cursor()) as cursor:
-        
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS frame (
-                    imdb_id TEXT,
-                    frame_index INTEGER,
-                    wavelet_hash TEXT,
-                    a_hash TEXT,
-                    d_hash TEXT,
-                    perceptual_hash TEXT,
-                    md5_hash TEXT,
-                    average_color BLOB,
-                    num_faces INTEGER,
-                    PRIMARY KEY (imdb_id, frame_index)
-                )
-            """)
     
             cursor.execute("""
-                INSERT OR IGNORE INTO frame (imdb_id, frame_index)
-                VALUES (?, ?)
+                INSERT INTO frame (imdb_id, frame_index)
+                VALUES (%s, %s)
+                ON CONFLICT (imdb_id, frame_index) DO NOTHING;
             """, (imdb_id, frame_index))
         
         conn.commit()
@@ -226,7 +217,7 @@ class Frame():
 
     def get_cached_hash(self, hash_type):
         with closing(conn.cursor()) as cursor:
-            cursor.execute(f"SELECT {hash_type} FROM frame WHERE imdb_id = ? AND frame_index = ?", (self.imdb_id, self.frame_index))
+            cursor.execute(f"SELECT {hash_type} FROM frame WHERE imdb_id = %s AND frame_index = %s", (self.imdb_id, self.frame_index))
             result = cursor.fetchone()
             return result[0] if result and result[0] else None
 
@@ -236,8 +227,8 @@ class Frame():
         hash_value = hash_func(frame_image)
         with closing(conn.cursor()) as cursor:
             cursor.execute(f"""
-                UPDATE frame SET {hash_type} = ?
-                WHERE imdb_id = ? AND frame_index = ?
+                UPDATE frame SET {hash_type} = %s
+                WHERE imdb_id = %s AND frame_index = %s
             """, (hash_value, self.imdb_id, self.frame_index))
         conn.commit()
         return hash_value
@@ -274,21 +265,38 @@ class Frame():
         
         # with closing(conn.cursor()) as cursor:
         # cursor.execute("""
-        #     UPDATE frame SET md5_hash = ?
-        #     WHERE imdb_id = ? AND frame_index = ?
+        #     UPDATE frame SET md5_hash = %s
+        #     WHERE imdb_id = %s AND frame_index = %s
         # """, (md5_hash, self.imdb_id, self.frame_index))
         # self.get_connection().commit()
         
         # return md5_hash
 
     def get_average_color(self):
-        compute_mean_color = lambda img: array_to_blob(np.mean(np.array(img), axis=(0, 1)))
-        ret = self.get_cached_hash("average_color") or self.compute_and_cache_hash(compute_mean_color, "average_color")
-        return blob_to_array(ret)
+        compute_mean_color = lambda img: np.mean(np.array(img), axis=(0, 1))
+        # ret = self.get_cached_hash("average_color") or self.compute_and_cache_hash(compute_mean_color, "average_color")
+
+        with closing(conn.cursor()) as cursor:
+            cursor.execute(f"SELECT average_color FROM frame WHERE imdb_id = %s AND frame_index = %s", (self.imdb_id, self.frame_index))
+            result = cursor.fetchone()
+            if not result[0] is None:
+                return result[0]
+
+            frame_image = self.get_frame_image()
+
+            average_color = compute_mean_color(frame_image)
+
+            cursor.execute("""
+                UPDATE frame
+                SET average_color = %s
+                WHERE imdb_id = %s AND frame_index = %s
+            """, (average_color.tolist(), self.imdb_id, self.frame_index))
+            
+        return average_color
 
     def get_num_faces(self):
         with closing(conn.cursor()) as cursor:
-            cursor.execute(f"SELECT num_faces FROM frame WHERE imdb_id = ? AND frame_index = ?", (self.imdb_id, self.frame_index))
+            cursor.execute(f"SELECT num_faces FROM frame WHERE imdb_id = %s AND frame_index = %s", (self.imdb_id, self.frame_index))
             result = cursor.fetchone()
         if result and result[0]:
             return result[0]
@@ -298,8 +306,8 @@ class Frame():
     def set_num_faces(self, num_faces):
         with closing(conn.cursor()) as cursor:
             cursor.execute(f"""
-                UPDATE frame SET num_faces = ?
-                WHERE imdb_id = ? AND frame_index = ?
+                UPDATE frame SET num_faces = %s
+                WHERE imdb_id = %s AND frame_index = %s
             """, (num_faces, self.imdb_id, self.frame_index))
         conn.commit()
 
@@ -315,7 +323,7 @@ class Frame():
         with closing(conn.cursor()) as cursor:
             cursor.execute("""
                 SELECT * FROM frame
-                WHERE frame_index = ?
+                WHERE frame_index = %s
             """, (self.frame_index,)
             )
 
@@ -330,7 +338,7 @@ class Frame():
         with closing(conn.cursor()) as cursor:
             cursor.execute("""
                 SELECT face_index FROM face
-                WHERE imdb_id = ? AND frame_index = ?
+                WHERE imdb_id = %s AND frame_index = %s
             """, (self.imdb_id, self.frame_index))
             return [ Face(self.imdb_id, self.frame_index, res[0]) for res in cursor.fetchall() ]
 
@@ -341,19 +349,11 @@ class Actor():
     def add_actor(full_name: str):
         a = Actor(full_name)
         with closing(conn.cursor()) as cursor:
-        
-            # Create table if it doesn't exist
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS actor (
-                    actor_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    full_name TEXT
-                )
-            """)
             
             # Insert actor data into table
             cursor.execute("""
                 INSERT INTO actor (full_name)
-                VALUES (?)
+                VALUES (%s)
             """, (full_name,))
         
         conn.commit()
@@ -364,7 +364,7 @@ class Actor():
 
     def get_actor_id(self):
         with closing(conn.cursor()) as cursor:
-            cursor.execute("SELECT actor_id FROM actor WHERE full_name = ?", (self.full_name,))
+            cursor.execute("SELECT actor_id FROM actor WHERE full_name = %s", (self.full_name,))
             result = cursor.fetchone()
             return result[0] if result else None
 
@@ -375,50 +375,42 @@ class Actor():
 class Character():
 
     @staticmethod
-    def add_character(actor_id: int, full_name: str):
-        c = Character(actor_id, full_name)
+    def add_character():
         with closing(conn.cursor()) as cursor:
-        
-            # Create table if it doesn't exist
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS character (
-                    character_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    actor_id INTEGER,
-                    full_name TEXT,
-                    FOREIGN KEY (actor_id) REFERENCES actor (actor_id)
-                )
-            """)
             
             # Insert character data into table
             cursor.execute("""
-                INSERT INTO character (actor_id, full_name)
-                VALUES (?, ?)
-            """, (actor_id, full_name,))
+                INSERT INTO character (actor_id, full_name) VALUES (NULL, NULL)
+            """)
+
+        character_id = cur.fetchone()[0]
         
         conn.commit()
 
-    def __init__(self, actor_id: int, full_name: str):
+        c = Character(character_id)
+
+    def __init__(self, character_id):
         super().__init__()
-        self.actor_id = actor_id
-        self.full_name = full_name
+        self.character_id = character_id
 
     def get_character_id(self):
-        with closing(conn.cursor()) as cursor:
-            cursor.execute("SELECT character_id FROM character WHERE full_name = ?", (self.full_name,))
-            result = cursor.fetchone()
-        return result[0] if result else None
+        # with closing(conn.cursor()) as cursor:
+        #     cursor.execute("SELECT character_id FROM character WHERE full_name = %s", (self.full_name,))
+        #     result = cursor.fetchone()
+        # return result[0] if result else None
+        return self.character_id
 
-    def get_name(self):
-        return self.full_name
+    # def get_name(self):
+    #     return self.full_name
 
-    def get_movie_id(self):
-        with closing(conn.cursor()) as cursor:
-            cursor.execute("SELECT movie_id FROM movie_character WHERE character_id = ?", (self.get_character_id(),))
-            result = cursor.fetchone()
-        return result[0] if result else None
+    # def get_movie_id(self):
+    #     with closing(conn.cursor()) as cursor:
+    #         cursor.execute("SELECT movie_id FROM movie_character WHERE character_id = %s", (self.get_character_id(),))
+    #         result = cursor.fetchone()
+    #     return result[0] if result else None
 
-    def get_actor_id(self):
-        return self.actor_id
+    # def get_actor_id(self):
+    #     return self.actor_id
 
 
 class ImageCache:
@@ -486,32 +478,13 @@ class Face():
     def add_face(imdb_id: str, frame_index: int, face_index: int):
         f = Face(imdb_id, frame_index, face_index)
         with closing(conn.cursor()) as cursor:
-        
-            # Create table if it doesn't exist
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS face (
-                    imdb_id TEXT,
-                    frame_index INTEGER,
-                    face_index INTEGER,
-                    wavelet_hash TEXT,
-                    a_hash TEXT,
-                    d_hash TEXT,
-                    perceptual_hash TEXT,
-                    md5_hash TEXT,
-                    character_id INTEGER,
-                    facial_landmarks BLOB,
-                    emotion_embedding BLOB,
-                    PRIMARY KEY (imdb_id, frame_index, face_index),
-                    FOREIGN KEY (character_id) REFERENCES character (character_id)
-                )
-            """)
-            
             # face_embedding BLOB,
             
             # Insert face data into table
             cursor.execute("""
-                INSERT OR IGNORE INTO face (imdb_id, frame_index, face_index)
-                VALUES (?, ?, ?)
+                INSERT INTO face (imdb_id, frame_index, face_index)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (imdb_id, frame_index, face_index) DO NOTHING;
             """, (imdb_id, frame_index, face_index,))
         
             conn.commit()
@@ -532,7 +505,7 @@ class Face():
 
     def get_character_id(self):
         with closing(conn.cursor()) as cursor:
-            cursor.execute("SELECT character_id FROM face WHERE imdb_id = ? AND frame_index = ? AND face_index = ?",
+            cursor.execute("SELECT character_id FROM face WHERE imdb_id = %s AND frame_index = %s AND face_index = %s",
                            (self.imdb_id, self.frame_index, self.face_index))
             result = cursor.fetchone()
         if result:
@@ -583,64 +556,28 @@ class Face():
 
     def get_facial_landmarks(self):
         with closing(conn.cursor()) as cursor:
-            cursor.execute("SELECT facial_landmarks FROM face WHERE imdb_id = ? AND frame_index = ? AND face_index = ?",
+            cursor.execute("SELECT facial_landmarks FROM face WHERE imdb_id = %s AND frame_index = %s AND face_index = %s",
                            (self.imdb_id, self.frame_index, self.face_index))
             result = cursor.fetchone()
-        if result:
-            return blob_to_array(result[0])
+        if result[0]:
+            return np.array(result[0])
         else:
             raise Exception("No facial_landmarks defined for movie/frame/index")
 
     def set_facial_landmarks(self, vector: np.ndarray):
         """Insert a vector into the database, associated with the given key"""
-        vector_blob = array_to_blob(vector)
         with closing(conn.cursor()) as cursor:
             cursor.execute('''
-                INSERT OR REPLACE INTO face (imdb_id, frame_index, face_index, facial_landmarks) VALUES (?, ?, ?, ?)
-            ''', (self.imdb_id, self.frame_index, self.face_index, vector_blob))
+                INSERT INTO face (imdb_id, frame_index, face_index, facial_landmarks)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (imdb_id, frame_index, face_index)
+                DO UPDATE SET facial_landmarks = EXCLUDED.facial_landmarks
+            ''', (self.imdb_id, self.frame_index, self.face_index, vector.ravel().tolist()))
             conn.commit()
-
-    def get_emotion_embedding(self):
-        with closing(conn.cursor()) as cursor:
-            cursor.execute("SELECT emotion_embedding FROM face WHERE imdb_id = ? AND frame_index = ? AND face_index = ?",
-                           (self.imdb_id, self.frame_index, self.face_index))
-            result = cursor.fetchone()
-        if result:
-            return blob_to_array(result[0])
-        else:
-            raise Exception("No emotion_embedding defined for movie/frame/index")
-    
-    def set_emotion_embedding(self, vector: np.ndarray):
-        """Insert a vector into the database, associated with the given key"""
-        vector_blob = array_to_blob(vector)
-        with closing(conn.cursor()) as cursor:
-            cursor.execute('''
-                INSERT OR REPLACE INTO face (imdb_id, frame_index, face_index, emotion_embedding) VALUES (?, ?, ?, ?)
-            ''', (self.imdb_id, self.frame_index, self.face_index, vector_blob))
-        conn.commit()
-
-    # def get_face_embedding(self):
-    #     cursor = self.get_cursor()
-    #     cursor.execute("SELECT face_embedding FROM face WHERE imdb_id = ? AND frame_index = ? AND face_index = ?",
-    #                    (self.imdb_id, self.frame_index, self.face_index))
-    #     result = cursor.fetchone()
-    #     if result:
-    #         return self.blob_to_array(result[0])
-    #     else:
-    #         raise Exception("No face_embedding defined for movie/frame/index")
-    
-    # def set_face_embedding(self, vector: np.ndarray):
-    #     """Insert a vector into the database, associated with the given key"""
-    #     vector_blob = self.array_to_blob(vector)
-    #     cursor = self.get_cursor()
-    #     cursor.execute('''
-    #         INSERT OR REPLACE INTO face (imdb_id, frame_index, face_index, face_embedding) VALUES (?, ?, ?, ?)
-    #     ''', (self.imdb_id, self.frame_index, self.face_index, vector_blob))
-    #     self.conn.commit()
 
     def get_cached_hash(self, hash_type):
         with closing(conn.cursor()) as cursor:
-            cursor.execute(f"SELECT {hash_type} FROM face WHERE imdb_id = ? AND frame_index = ? AND face_index = ?", (self.imdb_id, self.frame_index, self.face_index))
+            cursor.execute(f"SELECT {hash_type} FROM face WHERE imdb_id = %s AND frame_index = %s AND face_index = %s", (self.imdb_id, self.frame_index, self.face_index))
             result = cursor.fetchone()
         return result[0] if result and result[0] else None
 
@@ -652,8 +589,8 @@ class Face():
         hash_value = str(hash_func(frame_image))
         with closing(conn.cursor()) as cursor:
             cursor.execute(f"""
-                UPDATE face SET {hash_type} = ?
-                WHERE imdb_id = ? AND frame_index = ? AND face_index = ?
+                UPDATE face SET {hash_type} = %s
+                WHERE imdb_id = %s AND frame_index = %s AND face_index = %s
             """, (hash_value, self.imdb_id, self.frame_index, self.face_index))
         conn.commit()
         return hash_value
@@ -684,8 +621,8 @@ class Face():
         
         with closing(conn.cursor()) as cursor:
             cursor.execute("""
-                UPDATE face SET md5_hash = ?
-                WHERE imdb_id = ? AND frame_index = ? AND face_index = ?
+                UPDATE face SET md5_hash = %s
+                WHERE imdb_id = %s AND frame_index = %s AND face_index = %s
             """, (md5_hash, self.imdb_id, self.frame_index, self.face_index))
         conn.commit()
         
@@ -697,3 +634,185 @@ class Face():
         self.get_d_hash()
         self.get_perceptual_hash()
         self.get_md5_hash()
+
+    def get_emotion_embeddings(self):
+
+        with closing(conn.cursor()) as cursor:
+            cursor.execute("""
+                SELECT emb_method FROM face_emotion
+                WHERE imdb_id = %s AND frame_index = %s
+            """, (self.imdb_id, self.frame_index))
+            return [ FaceEmotionEmbedding(self.imdb_id, self.frame_index, self.face_index, res[0]) for res in cursor.fetchall() ]
+
+    def get_face_embeddings(self):
+
+        with closing(conn.cursor()) as cursor:
+            cursor.execute("""
+                SELECT emb_method FROM face_emotion
+                WHERE imdb_id = %s AND frame_index = %s
+            """, (self.imdb_id, self.frame_index))
+            return [ FaceIdentity(self.imdb_id, self.frame_index, self.face_index, res[0]) for res in cursor.fetchall() ]
+
+
+
+class FaceEmotionEmbedding():
+
+    @staticmethod
+    def add_face_emotion(imdb_id: str, frame_index: int, face_index: int, emb_method: str):
+        f = FaceEmotionEmbedding(imdb_id, frame_index, face_index, emb_method)
+        with closing(conn.cursor()) as cursor:
+        
+            # Insert face data into table
+            cursor.execute("""
+                INSERT INTO face_emotion (imdb_id, frame_index, face_index, emb_method)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (imdb_id, frame_index, face_index, emb_method) DO NOTHING;
+            """, (imdb_id, frame_index, face_index, emb_method))
+        
+            conn.commit()
+        return f
+
+    def __init__(self, imdb_id: str, frame_index: int, face_index: int, emb_method: str):
+        super().__init__()
+        self.imdb_id = imdb_id
+        self.frame_index = frame_index
+        self.face_index = face_index
+        self.emb_method = emb_method
+
+    def get_face_index(self):
+        return self.face_index
+
+    def get_frame_index(self):
+        return self.frame_index
+
+    def get_embedding_method(self):
+        return self.emb_method
+
+    def get_embedding(self):
+        with closing(conn.cursor()) as cursor:
+            cursor.execute("SELECT embedding FROM face_emotion WHERE imdb_id = %s AND frame_index = %s AND face_index = %s",
+                           (self.imdb_id, self.frame_index, self.face_index))
+            result = cursor.fetchone()
+        if result:
+            return result[0]
+        else:
+            raise Exception("No emotion_embedding defined for movie/frame/index")
+
+    def get_classification_confidence(self):
+        with closing(conn.cursor()) as cursor:
+            cursor.execute("SELECT classification, confidence FROM face_emotion WHERE imdb_id = %s AND frame_index = %s AND face_index = %s",
+                           (self.imdb_id, self.frame_index, self.face_index))
+            result = cursor.fetchone()
+        if result:
+            return result[0], result[1]
+        else:
+            raise Exception("No emotion_embedding defined for movie/frame/index")
+
+    def set_embedding(self, vector: np.ndarray, classification: str, confidence: float):
+        """Insert a vector into the database, associated with the given key"""
+        with closing(conn.cursor()) as cursor:
+            # cursor.execute('''
+            #     INSERT INTO face_embeddings (imdb_id, frame_index, face_index, embedding, classification, confidence) VALUES (%s, %s, %s, %s, %s, %s)
+            # ''', (self.imdb_id, self.frame_index, self.face_index, vector, classification, confidence))
+
+            # cursor.execute("""
+            #     UPDATE face_embeddings
+            #     SET average_color = %s
+            #     WHERE imdb_id = %s AND frame_index = %s
+            # """, (average_color.tolist(), self.imdb_id, self.frame_index))
+
+            # cursor.execute('''
+            #     INSERT INTO face_embeddings (imdb_id, frame_index, face_index, embedding, classification, confidence) 
+            #     VALUES (%s, %s, %s, %s, %s, %s)
+            # ''', (self_imdb_id, self_frame_index, self_face_index, vector_str, classification, confidence))
+
+            cursor.execute('''
+                UPDATE face_emotion 
+                SET embedding = %s, classification = %s, confidence = %s
+                WHERE imdb_id = %s AND frame_index = %s AND face_index = %s
+            ''', (vector, classification, confidence, self.imdb_id, self.frame_index, self.face_index))
+
+
+        conn.commit()
+
+
+
+class FaceIdentity():
+
+    @staticmethod
+    def add_face(imdb_id: str, frame_index: int, face_index: int, emb_method: str):
+        f = FaceIdentity(imdb_id, frame_index, face_index, emb_method)
+        with closing(conn.cursor()) as cursor:
+        
+            # Insert face data into table
+            cursor.execute("""
+                INSERT INTO face_identity (imdb_id, frame_index, face_index, emb_method)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (imdb_id, frame_index, face_index, emb_method) DO NOTHING;
+            """, (imdb_id, frame_index, face_index, emb_method))
+        
+            conn.commit()
+        return f
+
+    def __init__(self, imdb_id: str, frame_index: int, face_index: int, emb_method: str):
+        super().__init__()
+        self.imdb_id = imdb_id
+        self.frame_index = frame_index
+        self.face_index = face_index
+        self.emb_method = emb_method
+
+    def get_face_index(self):
+        return self.face_index
+
+    def get_frame_index(self):
+        return self.frame_index
+
+    def get_embedding_method(self):
+        return self.emb_method
+
+    def get_embedding(self):
+        with closing(conn.cursor()) as cursor:
+            cursor.execute("SELECT embedding FROM face_identity WHERE imdb_id = %s AND frame_index = %s AND face_index = %s",
+                           (self.imdb_id, self.frame_index, self.face_index))
+            result = cursor.fetchone()
+        if result:
+            return result[0]
+        else:
+            raise Exception("No emotion_embedding defined for movie/frame/index in face_identity")
+    
+    def set_embedding(self, vector: np.ndarray):
+        """Insert a vector into the database, associated with the given key"""
+        with closing(conn.cursor()) as cursor:
+            
+            cursor.execute('''
+                UPDATE face_identity 
+                SET embedding = %s
+                WHERE imdb_id = %s AND frame_index = %s AND face_index = %s
+            ''', (vector, self.imdb_id, self.frame_index, self.face_index))
+
+        conn.commit()
+
+    def set_character(self, character_id):
+        with closing(conn.cursor()) as cursor:
+            
+            cursor.execute('''
+                UPDATE face_identity 
+                SET character_id = %s
+                WHERE imdb_id = %s AND frame_index = %s AND face_index = %s
+            ''', (character_id, self.imdb_id, self.frame_index, self.face_index))
+
+        conn.commit()
+
+    def get_character(self):
+        with closing(conn.cursor()) as cursor:
+            
+            cursor.execute('''
+                SELECT character_id FROM face_identity
+                WHERE imdb_id = %s AND frame_index = %s AND face_index = %s
+            ''', (self.imdb_id, self.frame_index, self.face_index))
+            result = cursor.fetchone()
+
+        if result[0]:
+            return new Character(result[0])
+        else:
+            raise Exception("No character_id defined for movie/frame/index in face_identity")

@@ -4,6 +4,8 @@
 movies.db
 movies.db-journal
 .DS_Store
+movies_db.logfile
+movies_db/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
